@@ -7,11 +7,14 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "dev:iam": "tsx src/index-iam.ts",
     "start": "node dist/index.js",
+    "start:iam": "node dist/index-iam.js",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test dist/test/**/*.js",
-    "test:connection": "tsx src/test/connection.ts"
+    "test:connection": "tsx src/test/connection.ts",
+    "test:iam": "tsx src/test/iam-connection.ts"
   },
   "keywords": ["mcp", "postgresql", "iam", "aws", "rds"],
   "author": "",
@@ -20,7 +23,8 @@
     "@modelcontextprotocol/sdk": "^0.5.0",
     "pg": "^8.12.0",
     "@aws-sdk/client-rds": "^3.600.0",
-    "@aws-sdk/rds-signer": "^3.600.0"
+    "@aws-sdk/rds-signer": "^3.600.0",
+    "@aws-sdk/credential-providers": "^3.600.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
