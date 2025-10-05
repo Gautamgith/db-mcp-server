@@ -1,0 +1,68 @@
+# Example Terraform Variables File
+# Copy this file to terraform.tfvars and update with your values
+
+# AWS Configuration
+aws_region = "us-west-2"
+environment = "dev"
+
+# Existing Network Resources (REQUIRED)
+# Replace with your actual VPC and subnet IDs
+vpc_id = "vpc-xxxxxxxxxxxxxxxxx"
+public_subnet_id = "subnet-xxxxxxxxxxxxxxxxx"
+private_subnet_ids = [
+  "subnet-yyyyyyyyyyyyyyyyy",
+  "subnet-zzzzzzzzzzzzzzzzz"
+]
+
+# Security Configuration
+# CIDR blocks allowed for SSH access (typically your internal network)
+allowed_ssh_cidrs = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+# CIDR blocks allowed for web interface access
+allowed_web_cidrs = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+# EC2 Configuration
+ec2_instance_type = "t3.medium"  # Adjust based on your needs
+ec2_key_pair_name = "my-key-pair"  # Your existing EC2 key pair name
+
+# RDS Configuration
+rds_instance_class = "db.t3.micro"  # Start small, scale as needed
+rds_allocated_storage = 20          # GB
+rds_max_allocated_storage = 100     # GB (auto-scaling limit)
+
+# Database Configuration
+db_name = "mcpserver"
+db_master_username = "postgres"
+db_master_password = "YourSecurePassword123!"  # Use a strong password
+db_iam_username = "mcp_server"                 # IAM user for MCP server
+
+# Application Configuration
+github_repo_url = "https://github.com/your-org/postgresql-mcp.git"
+domain_name = ""  # Optional: your domain name (e.g., "mcp.yourdomain.com")
+
+# Security Settings
+enable_deletion_protection = false  # Set to true for production
+
+# Example configurations for different environments:
+
+# Development Environment
+# environment = "dev"
+# ec2_instance_type = "t3.small"
+# rds_instance_class = "db.t3.micro"
+# enable_deletion_protection = false
+
+# Staging Environment
+# environment = "staging"
+# ec2_instance_type = "t3.medium"
+# rds_instance_class = "db.t3.small"
+# enable_deletion_protection = false
+
+# Production Environment
+# environment = "prod"
+# ec2_instance_type = "t3.large"
+# rds_instance_class = "db.t3.medium"
+# rds_allocated_storage = 50
+# rds_max_allocated_storage = 500
+# enable_deletion_protection = true
+# allowed_ssh_cidrs = ["10.0.0.0/16"]  # More restrictive for prod
+# allowed_web_cidrs = ["10.0.0.0/16"]

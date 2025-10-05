@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Server - Live Logs</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1e1e1e;
+            color: #ffffff;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: #2d2d2d;
+            padding: 1rem;
+            border-bottom: 1px solid #404040;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: #ffffff;
+            font-size: 1.5rem;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #28a745;
+        }
+
+        .status-dot.disconnected {
+            background: #dc3545;
+        }
+
+        .controls {
+            background: #2d2d2d;
+            padding: 1rem;
+            border-bottom: 1px solid #404040;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        label {
+            color: #cccccc;
+            font-weight: 500;
+        }
+
+        select, input, button {
+            background: #404040;
+            border: 1px solid #555555;
+            color: #ffffff;
+            padding: 0.5rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: #007bff;
+        }
+
+        button {
+            background: #007bff;
+            border: 1px solid #007bff;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #555555;
+            border-color: #555555;
+            cursor: not-allowed;
+        }
+
+        .log-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .log-content {
+            flex: 1;
+            background: #1e1e1e;
+            overflow-y: auto;
+            padding: 1rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+
+        .log-line {
+            margin-bottom: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 3px;
+            word-wrap: break-word;
+        }
+
+        .log-line:hover {
+            background: #2d2d2d;
+        }
+
+        .log-line.error {
+            background: rgba(220, 53, 69, 0.1);
+            border-left: 3px solid #dc3545;
+        }
+
+        .log-line.warn {
+            background: rgba(255, 193, 7, 0.1);
+            border-left: 3px solid #ffc107;
+        }
+
+        .log-line.info {
+            background: rgba(23, 162, 184, 0.1);
+            border-left: 3px solid #17a2b8;
+        }
+
+        .log-line.debug {
+            background: rgba(108, 117, 125, 0.1);
+            border-left: 3px solid #6c757d;
+        }
+
+        .timestamp {
+            color: #6c757d;
+            margin-right: 0.5rem;
+        }
+
+        .log-content {
+            color: #ffffff;
+        }
+
+        .sidebar {
+            width: 300px;
+            background: #2d2d2d;
+            border-left: 1px solid #404040;
+            padding: 1rem;
+            overflow-y: auto;
+        }
+
+        .sidebar h3 {
+            color: #ffffff;
+            margin-bottom: 1rem;
+            font-size: 1.1rem;
+        }
+
+        .service-list {
+            list-style: none;
+        }
+
+        .service-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem;
+            margin-bottom: 0.5rem;
+            background: #404040;
+            border-radius: 4px;
+        }
+
+        .service-name {
+            color: #ffffff;
+            font-weight: 500;
+        }
+
+        .service-status {
+            padding: 0.25rem 0.5rem;
+            border-radius: 3px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        .service-status.active {
+            background: #28a745;
+            color: #ffffff;
+        }
+
+        .service-status.inactive {
+            background: #dc3545;
+            color: #ffffff;
+        }
+
+        .stats {
+            margin-top: 2rem;
+            padding: 1rem;
+            background: #404040;
+            border-radius: 4px;
+        }
+
+        .stats h4 {
+            color: #ffffff;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.25rem;
+            color: #cccccc;
+            font-size: 0.9rem;
+        }
+
+        .auto-scroll {
+            position: sticky;
+            bottom: 1rem;
+            right: 1rem;
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .auto-scroll.active {
+            background: #28a745;
+        }
+
+        .loading {
+            text-align: center;
+            color: #6c757d;
+            padding: 2rem;
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                display: none;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .control-group {
+                justify-content: space-between;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔧 MCP Server - Live Logs</h1>
+        <div class="status-indicator">
+            <div class="status-dot" id="connectionStatus"></div>
+            <span id="connectionText">Connecting...</span>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="control-group">
+            <label for="logSelect">Log Source:</label>
+            <select id="logSelect">
+                <option value="">Select a log source...</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="filterInput">Filter:</label>
+            <input type="text" id="filterInput" placeholder="Filter log lines...">
+        </div>
+
+        <div class="control-group">
+            <button id="clearBtn">Clear</button>
+            <button id="pauseBtn">Pause</button>
+            <button id="refreshBtn">Refresh</button>
+        </div>
+
+        <div class="control-group">
+            <label for="linesInput">Lines:</label>
+            <input type="number" id="linesInput" value="100" min="10" max="1000" style="width: 80px;">
+        </div>
+    </div>
+
+    <div class="log-container">
+        <div class="log-content" id="logContent">
+            <div class="loading">
+                <p>Select a log source to start viewing logs...</p>
+            </div>
+        </div>
+
+        <div class="sidebar">
+            <h3>System Status</h3>
+            <ul class="service-list" id="serviceList">
+                <li class="loading">Loading services...</li>
+            </ul>
+
+            <div class="stats">
+                <h4>Statistics</h4>
+                <div class="stat-item">
+                    <span>Total Lines:</span>
+                    <span id="totalLines">0</span>
+                </div>
+                <div class="stat-item">
+                    <span>Filtered Lines:</span>
+                    <span id="filteredLines">0</span>
+                </div>
+                <div class="stat-item">
+                    <span>Connection:</span>
+                    <span id="connectionUptime">--</span>
+                </div>
+                <div class="stat-item">
+                    <span>Last Update:</span>
+                    <span id="lastUpdate">--</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button class="auto-scroll" id="autoScrollBtn" title="Toggle auto-scroll">📍</button>
+
+    <script>
+        class LogViewer {
+            constructor() {
+                this.socket = io();
+                this.currentLog = null;
+                this.isPaused = false;
+                this.autoScroll = true;
+                this.totalLines = 0;
+                this.filteredLines = 0;
+                this.connectionStartTime = Date.now();
+                this.logs = [];
+                this.filterText = '';
+
+                this.initElements();
+                this.initSocket();
+                this.loadLogSources();
+                this.loadSystemStatus();
+                this.startStatsUpdate();
+            }
+
+            initElements() {
+                this.logSelect = document.getElementById('logSelect');
+                this.filterInput = document.getElementById('filterInput');
+                this.logContent = document.getElementById('logContent');
+                this.clearBtn = document.getElementById('clearBtn');
+                this.pauseBtn = document.getElementById('pauseBtn');
+                this.refreshBtn = document.getElementById('refreshBtn');
+                this.linesInput = document.getElementById('linesInput');
+                this.autoScrollBtn = document.getElementById('autoScrollBtn');
+                this.connectionStatus = document.getElementById('connectionStatus');
+                this.connectionText = document.getElementById('connectionText');
+                this.serviceList = document.getElementById('serviceList');
+                this.totalLinesSpan = document.getElementById('totalLines');
+                this.filteredLinesSpan = document.getElementById('filteredLines');
+                this.connectionUptimeSpan = document.getElementById('connectionUptime');
+                this.lastUpdateSpan = document.getElementById('lastUpdate');
+
+                // Event listeners
+                this.logSelect.addEventListener('change', () => this.changeLogSource());
+                this.filterInput.addEventListener('input', () => this.updateFilter());
+                this.clearBtn.addEventListener('click', () => this.clearLogs());
+                this.pauseBtn.addEventListener('click', () => this.togglePause());
+                this.refreshBtn.addEventListener('click', () => this.refreshLogs());
+                this.autoScrollBtn.addEventListener('click', () => this.toggleAutoScroll());
+            }
+
+            initSocket() {
+                this.socket.on('connect', () => {
+                    this.connectionStatus.className = 'status-dot';
+                    this.connectionText.textContent = 'Connected';
+                    this.connectionStartTime = Date.now();
+                });
+
+                this.socket.on('disconnect', () => {
+                    this.connectionStatus.className = 'status-dot disconnected';
+                    this.connectionText.textContent = 'Disconnected';
+                });
+
+                this.socket.on('log-line', (data) => {
+                    if (!this.isPaused) {
+                        this.addLogLine(data);
+                    }
+                });
+            }
+
+            async loadLogSources() {
+                try {
+                    const response = await fetch('/api/logs/list');
+                    const data = await response.json();
+
+                    this.logSelect.innerHTML = '<option value="">Select a log source...</option>';
+
+                    data.logs.forEach(log => {
+                        const option = document.createElement('option');
+                        option.value = log.path;
+                        option.textContent = log.name;
+                        option.title = log.description;
+                        this.logSelect.appendChild(option);
+                    });
+                } catch (error) {
+                    console.error('Failed to load log sources:', error);
+                }
+            }
+
+            async loadSystemStatus() {
+                try {
+                    const response = await fetch('/api/system/status');
+                    const data = await response.json();
+
+                    this.serviceList.innerHTML = '';
+
+                    Object.entries(data.services).forEach(([service, status]) => {
+                        const li = document.createElement('li');
+                        li.className = 'service-item';
+                        li.innerHTML = `
+                            <span class="service-name">${service}</span>
+                            <span class="service-status ${status.active ? 'active' : 'inactive'}">
+                                ${status.active ? 'Active' : 'Inactive'}
+                            </span>
+                        `;
+                        this.serviceList.appendChild(li);
+                    });
+                } catch (error) {
+                    console.error('Failed to load system status:', error);
+                    this.serviceList.innerHTML = '<li style="color: #dc3545;">Failed to load status</li>';
+                }
+            }
+
+            changeLogSource() {
+                const selectedLog = this.logSelect.value;
+
+                if (this.currentLog) {
+                    this.socket.emit('unsubscribe-log', this.currentLog);
+                }
+
+                if (selectedLog) {
+                    this.currentLog = selectedLog;
+                    this.clearLogs();
+                    this.socket.emit('subscribe-log', selectedLog);
+                    this.loadInitialLogs(selectedLog);
+                } else {
+                    this.currentLog = null;
+                    this.clearLogs();
+                }
+            }
+
+            async loadInitialLogs(logPath) {
+                try {
+                    const lines = this.linesInput.value || 100;
+                    const response = await fetch(`/api/logs/read/${encodeURIComponent(logPath)}?lines=${lines}`);
+                    const data = await response.json();
+
+                    const lines_array = data.content.split('\n').filter(line => line.trim());
+                    lines_array.forEach(line => {
+                        this.addLogLine({
+                            timestamp: new Date().toISOString(),
+                            content: line,
+                            source: logPath
+                        }, false);
+                    });
+
+                    this.scrollToBottom();
+                } catch (error) {
+                    console.error('Failed to load initial logs:', error);
+                }
+            }
+
+            addLogLine(data, shouldScroll = true) {
+                this.totalLines++;
+
+                const logLine = {
+                    timestamp: data.timestamp,
+                    content: data.content,
+                    source: data.source
+                };
+
+                this.logs.push(logLine);
+
+                // Keep only last 1000 lines for performance
+                if (this.logs.length > 1000) {
+                    this.logs.shift();
+                }
+
+                this.renderLogs();
+
+                if (shouldScroll && this.autoScroll) {
+                    this.scrollToBottom();
+                }
+
+                this.lastUpdateSpan.textContent = new Date().toLocaleTimeString();
+            }
+
+            renderLogs() {
+                const filteredLogs = this.logs.filter(log =>
+                    this.filterText === '' ||
+                    log.content.toLowerCase().includes(this.filterText.toLowerCase())
+                );
+
+                this.filteredLines = filteredLogs.length;
+
+                this.logContent.innerHTML = filteredLogs.map(log => {
+                    const logClass = this.getLogClass(log.content);
+                    const timestamp = new Date(log.timestamp).toLocaleTimeString();
+
+                    return `
+                        <div class="log-line ${logClass}">
+                            <span class="timestamp">${timestamp}</span>
+                            <span class="log-content">${this.escapeHtml(log.content)}</span>
+                        </div>
+                    `;
+                }).join('');
+
+                this.updateStats();
+            }
+
+            getLogClass(content) {
+                const lower = content.toLowerCase();
+                if (lower.includes('error') || lower.includes('err:') || lower.includes('failed')) {
+                    return 'error';
+                } else if (lower.includes('warn') || lower.includes('warning')) {
+                    return 'warn';
+                } else if (lower.includes('info') || lower.includes('started') || lower.includes('success')) {
+                    return 'info';
+                } else if (lower.includes('debug')) {
+                    return 'debug';
+                }
+                return '';
+            }
+
+            updateFilter() {
+                this.filterText = this.filterInput.value;
+                this.renderLogs();
+            }
+
+            clearLogs() {
+                this.logs = [];
+                this.totalLines = 0;
+                this.logContent.innerHTML = this.currentLog ?
+                    '<div class="loading"><p>Waiting for log data...</p></div>' :
+                    '<div class="loading"><p>Select a log source to start viewing logs...</p></div>';
+                this.updateStats();
+            }
+
+            togglePause() {
+                this.isPaused = !this.isPaused;
+                this.pauseBtn.textContent = this.isPaused ? 'Resume' : 'Pause';
+                this.pauseBtn.style.background = this.isPaused ? '#28a745' : '#007bff';
+            }
+
+            refreshLogs() {
+                if (this.currentLog) {
+                    this.clearLogs();
+                    this.loadInitialLogs(this.currentLog);
+                }
+                this.loadSystemStatus();
+            }
+
+            toggleAutoScroll() {
+                this.autoScroll = !this.autoScroll;
+                this.autoScrollBtn.className = `auto-scroll ${this.autoScroll ? 'active' : ''}`;
+                this.autoScrollBtn.textContent = this.autoScroll ? '📍' : '📌';
+
+                if (this.autoScroll) {
+                    this.scrollToBottom();
+                }
+            }
+
+            scrollToBottom() {
+                this.logContent.scrollTop = this.logContent.scrollHeight;
+            }
+
+            updateStats() {
+                this.totalLinesSpan.textContent = this.totalLines.toLocaleString();
+                this.filteredLinesSpan.textContent = this.filteredLines.toLocaleString();
+            }
+
+            startStatsUpdate() {
+                setInterval(() => {
+                    const uptime = Math.floor((Date.now() - this.connectionStartTime) / 1000);
+                    const hours = Math.floor(uptime / 3600);
+                    const minutes = Math.floor((uptime % 3600) / 60);
+                    const seconds = uptime % 60;
+
+                    this.connectionUptimeSpan.textContent =
+                        `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                }, 1000);
+
+                // Refresh system status every 30 seconds
+                setInterval(() => {
+                    this.loadSystemStatus();
+                }, 30000);
+            }
+
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+        }
+
+        // Initialize the log viewer when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new LogViewer();
+        });
+    </script>
+</body>
+</html>

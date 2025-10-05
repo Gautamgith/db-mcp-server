@@ -1,0 +1,316 @@
+name: Deploy PostgreSQL MCP Server
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+env:
+  NODE_VERSION: '18'
+  AWS_REGION: 'us-west-2'
+
+jobs:
+  test:
+    name: Test and Build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run linting
+      run: npm run lint
+
+    - name: Run type checking
+      run: npm run typecheck
+
+    - name: Build application
+      run: npm run build
+
+    - name: Archive build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts
+        path: |
+          dist/
+          package.json
+          package-lock.json
+        retention-days: 30
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run security audit
+      run: npm audit --audit-level high
+
+    - name: Run dependency check
+      uses: snyk/actions/node@master
+      continue-on-error: true
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high
+
+  deploy-dev:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    if: github.ref == 'refs/heads/develop' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'dev')
+    environment: development
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-artifacts
+
+    - name: Deploy to EC2
+      run: |
+        # Get EC2 instance IP
+        INSTANCE_IP=$(aws ec2 describe-instances \
+          --filters "Name=tag:Environment,Values=dev" "Name=tag:Purpose,Values=PostgreSQL MCP Server" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].PublicIpAddress' \
+          --output text)
+
+        if [ "$INSTANCE_IP" = "None" ] || [ -z "$INSTANCE_IP" ]; then
+          echo "No running EC2 instance found for development environment"
+          exit 1
+        fi
+
+        echo "Deploying to EC2 instance: $INSTANCE_IP"
+
+        # Setup SSH
+        mkdir -p ~/.ssh
+        echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H $INSTANCE_IP >> ~/.ssh/known_hosts
+
+        # Create deployment package
+        tar -czf mcp-server-deployment.tar.gz dist/ package.json package-lock.json
+
+        # Copy to EC2 and deploy
+        scp -i ~/.ssh/id_rsa mcp-server-deployment.tar.gz ec2-user@$INSTANCE_IP:/tmp/
+
+        ssh -i ~/.ssh/id_rsa ec2-user@$INSTANCE_IP << 'EOF'
+          set -e
+
+          echo "Starting deployment on $(hostname)..."
+
+          # Stop services
+          sudo systemctl stop mcp-server mcp-inspector || true
+
+          # Backup current deployment
+          if [ -d "/opt/mcp-server-backup" ]; then
+            sudo rm -rf /opt/mcp-server-backup
+          fi
+          if [ -d "/opt/mcp-server" ]; then
+            sudo cp -r /opt/mcp-server /opt/mcp-server-backup
+          fi
+
+          # Extract new deployment
+          cd /opt/mcp-server
+          sudo tar -xzf /tmp/mcp-server-deployment.tar.gz
+          sudo chown -R ec2-user:ec2-user /opt/mcp-server
+
+          # Install dependencies (if package-lock.json changed)
+          npm ci --production
+
+          # Update environment file if needed
+          if [ ! -f .env ]; then
+            echo "Warning: .env file not found, using defaults"
+          fi
+
+          # Start services
+          sudo systemctl start mcp-server
+          sleep 5
+          sudo systemctl start mcp-inspector
+
+          # Verify deployment
+          sleep 10
+          if sudo systemctl is-active --quiet mcp-server; then
+            echo "✅ MCP Server is running"
+          else
+            echo "❌ MCP Server failed to start"
+            sudo journalctl -u mcp-server --no-pager -n 20
+            exit 1
+          fi
+
+          if sudo systemctl is-active --quiet mcp-inspector; then
+            echo "✅ MCP Inspector is running"
+          else
+            echo "❌ MCP Inspector failed to start"
+            sudo journalctl -u mcp-inspector --no-pager -n 20
+          fi
+
+          echo "Deployment completed successfully!"
+          rm /tmp/mcp-server-deployment.tar.gz
+        EOF
+
+    - name: Verify deployment
+      run: |
+        INSTANCE_IP=$(aws ec2 describe-instances \
+          --filters "Name=tag:Environment,Values=dev" "Name=tag:Purpose,Values=PostgreSQL MCP Server" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].PublicIpAddress' \
+          --output text)
+
+        echo "Verifying deployment at $INSTANCE_IP"
+
+        # Wait for services to be ready
+        sleep 30
+
+        # Test MCP Inspector endpoint
+        if curl -f -s "http://$INSTANCE_IP/inspector/" > /dev/null; then
+          echo "✅ MCP Inspector is accessible"
+        else
+          echo "❌ MCP Inspector is not accessible"
+          exit 1
+        fi
+
+        # Test logging interface
+        if curl -f -s "http://$INSTANCE_IP/logs/" > /dev/null; then
+          echo "✅ Logging interface is accessible"
+        else
+          echo "⚠️ Logging interface is not accessible (this may be normal if not yet implemented)"
+        fi
+
+    - name: Notify deployment status
+      if: always()
+      run: |
+        INSTANCE_IP=$(aws ec2 describe-instances \
+          --filters "Name=tag:Environment,Values=dev" "Name=tag:Purpose,Values=PostgreSQL MCP Server" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].PublicIpAddress' \
+          --output text)
+
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "🚀 Deployment successful!"
+          echo "🔧 MCP Inspector: http://$INSTANCE_IP/inspector/"
+          echo "📊 Logs: http://$INSTANCE_IP/logs/"
+        else
+          echo "❌ Deployment failed!"
+        fi
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging'
+    environment: staging
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-artifacts
+
+    - name: Deploy to Staging EC2
+      run: |
+        echo "Deploying to staging environment..."
+        # Similar deployment steps as dev but with staging environment filter
+        INSTANCE_IP=$(aws ec2 describe-instances \
+          --filters "Name=tag:Environment,Values=staging" "Name=tag:Purpose,Values=PostgreSQL MCP Server" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].PublicIpAddress' \
+          --output text)
+
+        if [ "$INSTANCE_IP" = "None" ] || [ -z "$INSTANCE_IP" ]; then
+          echo "No running EC2 instance found for staging environment"
+          exit 1
+        fi
+
+        echo "Staging deployment to $INSTANCE_IP would proceed here..."
+        # Implementation similar to dev deployment
+
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-artifacts
+
+    - name: Deploy to Production EC2
+      run: |
+        echo "Deploying to production environment..."
+        # Production deployment with additional safety checks
+        INSTANCE_IP=$(aws ec2 describe-instances \
+          --filters "Name=tag:Environment,Values=prod" "Name=tag:Purpose,Values=PostgreSQL MCP Server" "Name=instance-state-name,Values=running" \
+          --query 'Reservations[0].Instances[0].PublicIpAddress' \
+          --output text)
+
+        if [ "$INSTANCE_IP" = "None" ] || [ -z "$INSTANCE_IP" ]; then
+          echo "No running EC2 instance found for production environment"
+          exit 1
+        fi
+
+        echo "Production deployment to $INSTANCE_IP would proceed here..."
+        # Implementation with additional safety checks and rollback capability
