@@ -64,13 +64,13 @@ resource "aws_security_group" "mcp_server_sg" {
     description = "SSH access"
   }
 
-  # MCP Inspector web interface
+  # MCP Server HTTP/SSE endpoint
   ingress {
     from_port   = 3000
     to_port     = 3000
     protocol    = "tcp"
     cidr_blocks = var.allowed_web_cidrs
-    description = "MCP Inspector"
+    description = "MCP Server HTTP/SSE (OAuth authenticated)"
   }
 
   # Logging interface
@@ -197,13 +197,17 @@ resource "aws_instance" "mcp_server" {
   iam_instance_profile  = aws_iam_instance_profile.mcp_server_profile.name
 
   user_data = base64encode(templatefile("${path.module}/user_data.sh", {
-    db_host      = var.rds_endpoint
-    db_name      = var.db_name
-    db_iam_user  = var.db_iam_username
-    aws_region   = var.aws_region
-    github_repo  = var.github_repo_url
-    domain_name  = var.domain_name
-    environment  = var.environment
+    db_host        = var.rds_endpoint
+    db_name        = var.db_name
+    db_iam_user    = var.db_iam_username
+    aws_region     = var.aws_region
+    github_repo    = var.github_repo_url
+    domain_name    = var.domain_name
+    environment    = var.environment
+    oauth_enabled  = var.oauth_enabled
+    oauth_issuer   = var.oauth_issuer
+    oauth_audience = var.oauth_audience
+    oauth_jwks_uri = var.oauth_jwks_uri
   }))
 
   root_block_device {

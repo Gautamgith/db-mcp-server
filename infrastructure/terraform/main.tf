@@ -53,12 +53,13 @@ resource "aws_security_group" "mcp_server_sg" {
     cidr_blocks = var.allowed_ssh_cidrs
   }
 
-  # MCP Inspector web interface
+  # MCP Server HTTP/SSE endpoint
   ingress {
     from_port   = 3000
     to_port     = 3000
     protocol    = "tcp"
     cidr_blocks = var.allowed_web_cidrs
+    description = "MCP Server HTTP/SSE (OAuth authenticated)"
   }
 
   # Logging interface
@@ -280,6 +281,10 @@ resource "aws_instance" "mcp_server" {
     github_repo    = var.github_repo_url
     domain_name    = var.domain_name
     environment    = var.environment
+    oauth_enabled  = var.oauth_enabled
+    oauth_issuer   = var.oauth_issuer
+    oauth_audience = var.oauth_audience
+    oauth_jwks_uri = var.oauth_jwks_uri
   }))
 
   root_block_device {

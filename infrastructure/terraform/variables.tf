@@ -114,3 +114,28 @@ variable "enable_deletion_protection" {
   type        = bool
   default     = true
 }
+
+# OAuth Configuration (EntraID/Azure AD)
+variable "oauth_enabled" {
+  description = "Enable OAuth 2.0 authentication"
+  type        = string
+  default     = "false"
+}
+
+variable "oauth_issuer" {
+  description = "OAuth issuer URL (EntraID tenant)"
+  type        = string
+  default     = ""
+}
+
+variable "oauth_audience" {
+  description = "OAuth audience (API application ID)"
+  type        = string
+  default     = ""
+}
+
+variable "oauth_jwks_uri" {
+  description = "JWKS URI for token validation"
+  type        = string
+  default     = ""
+}

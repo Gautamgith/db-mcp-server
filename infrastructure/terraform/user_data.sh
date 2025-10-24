@@ -34,11 +34,23 @@ chown ec2-user:ec2-user /opt/mcp-server
 
 # Create environment file
 cat > /opt/mcp-server/.env << EOF
-# Database Configuration
-DB_HOST=${db_host}
-DB_PORT=5432
-DB_NAME=${db_name}
-DB_USER=${db_iam_user}
+# HTTP Server Configuration
+MCP_SERVER_PORT=3000
+MCP_SERVER_HOST=0.0.0.0
+MCP_SERVER_PATH=/mcp
+
+# OAuth Configuration (EntraID/Azure AD)
+# Set to 'true' to enable OAuth authentication
+OAUTH_ENABLED=${oauth_enabled}
+OAUTH_ISSUER=${oauth_issuer}
+OAUTH_AUDIENCE=${oauth_audience}
+OAUTH_JWKS_URI=${oauth_jwks_uri}
+OAUTH_TOKEN_ALGORITHM=RS256
+OAUTH_CLOCK_TOLERANCE=60
+
+# Multi-Database Configuration
+DATABASE_CONFIGS='[{"id":"prod","name":"Production DB","host":"${db_host}","port":5432,"database":"${db_name}","user":"${db_iam_user}","useIAM":true,"awsRegion":"${aws_region}","enabled":true}]'
+DEFAULT_DATABASE_ID=prod
 
 # AWS Configuration
 AWS_REGION=${aws_region}
@@ -47,14 +59,9 @@ AWS_REGION=${aws_region}
 MCP_SERVER_NAME=postgresql-mcp
 MCP_SERVER_VERSION=1.0.0
 
-# Authentication Method
-USE_IAM_AUTH=true
-
 # Logging Configuration
 LOG_LEVEL=info
 LOG_FORMAT=json
-
-# Development Configuration
 NODE_ENV=production
 
 # Connection Pool Configuration
@@ -93,7 +100,7 @@ npm run build
 # Create systemd service files
 sudo tee /etc/systemd/system/mcp-server.service > /dev/null << 'SERVICE'
 [Unit]
-Description=PostgreSQL MCP Server
+Description=PostgreSQL MCP Server with HTTP/SSE and OAuth Authentication
 After=network.target
 
 [Service]
@@ -102,36 +109,21 @@ User=ec2-user
 WorkingDirectory=/opt/mcp-server
 Environment=NODE_ENV=production
 EnvironmentFile=/opt/mcp-server/.env
-ExecStart=/usr/bin/node /opt/mcp-server/dist/index-secure.js
+ExecStart=/usr/bin/node /opt/mcp-server/dist/index.js
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
+
+# Resource limits
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
 SERVICE
 
-# Create MCP Inspector service
-sudo tee /etc/systemd/system/mcp-inspector.service > /dev/null << 'INSPECTOR'
-[Unit]
-Description=MCP Inspector Web Interface
-After=network.target mcp-server.service
-
-[Service]
-Type=simple
-User=ec2-user
-WorkingDirectory=/opt/mcp-server
-Environment=NODE_ENV=production
-ExecStart=/usr/bin/npx @modelcontextprotocol/inspector --host 0.0.0.0 --port 3000
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-INSPECTOR
+# Note: MCP Server now runs on port 3000 as HTTP service with /mcp endpoint
+# MCP Inspector can be run separately on a different port if needed for testing
 
 # Create logging interface service
 sudo tee /etc/systemd/system/mcp-logs.service > /dev/null << 'LOGS'
@@ -158,13 +150,14 @@ EOF
 
 # Configure nginx
 cat > /etc/nginx/conf.d/mcp-server.conf << 'NGINX'
-# MCP Inspector proxy
+# MCP Server HTTP/SSE proxy
 server {
     listen 80;
     server_name _;
 
-    location /inspector/ {
-        proxy_pass http://localhost:3000/;
+    # MCP Server endpoint (HTTP/SSE)
+    location /mcp {
+        proxy_pass http://localhost:3000/mcp;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -172,9 +165,21 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization $http_authorization;
         proxy_cache_bypass $http_upgrade;
     }
 
+    # Health check endpoints
+    location ~ ^/health {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Logging interface
     location /logs/ {
         proxy_pass http://localhost:8080/;
         proxy_http_version 1.1;
@@ -217,9 +222,10 @@ cat > /var/www/html/index.html << 'HTML'
         <p>Environment: <strong>${environment}</strong></p>
 
         <div class="service">
-            <h3>🔧 MCP Inspector</h3>
-            <p>Interactive web interface for testing MCP tools</p>
-            <p><a href="/inspector/" target="_blank">Open MCP Inspector</a></p>
+            <h3>🔌 MCP Server Endpoint</h3>
+            <p>HTTP/SSE transport with OAuth 2.0 authentication</p>
+            <p><strong>Endpoint:</strong> <code>http://localhost:3000/mcp</code></p>
+            <p><strong>Health Check:</strong> <a href="/health" target="_blank">/health</a></p>
         </div>
 
         <div class="service">
@@ -229,24 +235,28 @@ cat > /var/www/html/index.html << 'HTML'
         </div>
 
         <div class="service">
-            <h3>📖 Documentation</h3>
-            <p>API documentation and usage examples</p>
+            <h3>📖 MCP Tools</h3>
+            <p>10 comprehensive tools for database operations</p>
             <ul>
-                <li>17 MCP tools available (Basic, IAM, Secure modes)</li>
-                <li>6 predefined secure query patterns</li>
-                <li>Advanced SQL injection protection</li>
-                <li>Rate limiting and complexity analysis</li>
+                <li>Database introspection (list_tables, describe_table)</li>
+                <li>Query execution (execute_query, structured_query)</li>
+                <li>Security analysis (validate_query_syntax, analyze_query_complexity)</li>
+                <li>System monitoring (connection_health, security_status, rate_limit_status)</li>
+                <li>Multi-database support (list_databases)</li>
             </ul>
         </div>
 
         <div class="service">
             <h3>🔐 Security Features</h3>
             <ul>
+                <li>OAuth 2.0 authentication (EntraID/Azure AD)</li>
                 <li>IAM database authentication</li>
+                <li>Multi-layer SQL injection prevention</li>
                 <li>Query pattern allowlisting</li>
-                <li>Rate limiting (100 req/min)</li>
-                <li>SQL injection prevention</li>
-                <li>Parameter sanitization</li>
+                <li>Rate limiting (100 req/min default)</li>
+                <li>PII detection and masking</li>
+                <li>Model theft protection</li>
+                <li>Excessive agency controls</li>
             </ul>
         </div>
     </div>
@@ -256,8 +266,8 @@ HTML
 
 # Reload systemd and start services
 systemctl daemon-reload
-systemctl enable mcp-server mcp-inspector mcp-logs
-systemctl start mcp-server mcp-inspector mcp-logs
+systemctl enable mcp-server mcp-logs
+systemctl start mcp-server mcp-logs
 
 # Restart nginx
 systemctl restart nginx
@@ -285,7 +295,7 @@ set -e
 echo "Starting deployment..."
 
 # Stop services
-sudo systemctl stop mcp-server mcp-inspector
+sudo systemctl stop mcp-server
 
 # Backup current version
 if [ -d "/opt/mcp-server-backup" ]; then
@@ -302,12 +312,11 @@ npm install
 npm run build
 
 # Start services
-sudo systemctl start mcp-server mcp-inspector
+sudo systemctl start mcp-server
 
 echo "Deployment completed successfully!"
 echo "Services status:"
 sudo systemctl status mcp-server --no-pager -l
-sudo systemctl status mcp-inspector --no-pager -l
 DEPLOY
 
 chmod +x /opt/mcp-server/deploy.sh
