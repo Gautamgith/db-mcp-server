@@ -1,0 +1,39 @@
+[Unit]
+Description=PostgreSQL MCP Server with OAuth Authentication
+Documentation=https://github.com/your-org/postgresql-mcp-server
+After=network.target
+
+[Service]
+Type=simple
+User=mcp-server
+Group=mcp-server
+WorkingDirectory=/opt/mcp-server
+
+# Environment configuration
+EnvironmentFile=/etc/mcp-server/config.env
+
+# Start the MCP server
+ExecStart=/usr/bin/node /opt/mcp-server/dist/index.js
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-server
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/mcp-server/logs
+
+[Install]
+WantedBy=multi-user.target
