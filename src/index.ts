@@ -4,60 +4,48 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { DatabaseConnection } from './database/connection.js';
-import { DatabaseQueries } from './database/queries.js';
-import { IAMDatabaseConnection } from './database/iam-connection.js';
-import { IAMDatabaseQueries } from './database/iam-queries.js';
+import { DatabaseConnectionManager } from './database/connection-manager.js';
 import { UnifiedDatabaseTools } from './tools/database-tools-unified.js';
 import { Logger } from './logging/logger.js';
-import { createDatabaseConfig, createConnectionPoolConfig } from './database/config.js';
 
 /**
  * Unified PostgreSQL MCP Server
  *
  * Features:
- * - Supports both standard and IAM authentication (configured via USE_IAM_AUTH env var)
+ * - Supports multiple databases with both standard and IAM authentication
  * - Comprehensive security: SQL injection prevention, rate limiting, complexity analysis
  * - Complete toolset: introspection, query execution, security analysis, monitoring
  * - Production-ready: audit logging, error handling, graceful shutdown
+ * - OWASP LLM Top 10 compliance
  */
 class PostgreSQLMCPServer {
   private server: Server;
   private logger: Logger;
-  private db: DatabaseConnection | IAMDatabaseConnection;
-  private queries: DatabaseQueries | IAMDatabaseQueries;
+  private connectionManager: DatabaseConnectionManager;
   private tools: UnifiedDatabaseTools;
-  private useIAM: boolean;
 
   constructor() {
     this.logger = new Logger();
-    this.useIAM = process.env.USE_IAM_AUTH === 'true';
 
     this.logger.info('Initializing PostgreSQL MCP Server', {
-      authentication_method: this.useIAM ? 'IAM' : 'Standard',
       security_features: [
         'SQL injection prevention',
         'Query pattern validation',
         'Rate limiting',
         'Complexity analysis',
-        'Audit logging'
+        'Audit logging',
+        'PII Protection',
+        'Excessive Agency Control',
+        'Model Theft Protection'
       ]
     });
 
-    const dbConfig = createDatabaseConfig();
-    const poolConfig = createConnectionPoolConfig();
-
-    // Initialize database connection based on authentication method
-    if (this.useIAM) {
-      this.db = new IAMDatabaseConnection(dbConfig, poolConfig, this.logger);
-      this.queries = new IAMDatabaseQueries(this.db as IAMDatabaseConnection, this.logger);
-    } else {
-      this.db = new DatabaseConnection(dbConfig, poolConfig);
-      this.queries = new DatabaseQueries(this.db as DatabaseConnection);
-    }
+    // Initialize connection manager
+    this.connectionManager = new DatabaseConnectionManager(this.logger);
+    this.connectionManager.loadFromEnvironment();
 
     // Initialize unified tools with all features
-    this.tools = new UnifiedDatabaseTools(this.queries, this.logger, this.useIAM);
+    this.tools = new UnifiedDatabaseTools(this.connectionManager, this.logger);
 
     // Initialize MCP server
     this.server = new Server(
@@ -102,8 +90,7 @@ class PostgreSQLMCPServer {
       } catch (error) {
         this.logger.error('Tool call failed', {
           tool: name,
-          error: error instanceof Error ? error.message : String(error),
-          authentication_method: this.useIAM ? 'IAM' : 'Standard'
+          error: error instanceof Error ? error.message : String(error)
         });
 
         // Handle rate limiting errors with specific status
@@ -129,20 +116,17 @@ class PostgreSQLMCPServer {
     try {
       this.logger.info('Starting PostgreSQL MCP Server');
 
-      // Initialize database connection
-      await this.db.initialize();
-
-      this.logger.info('Database connection initialized', {
-        authentication_method: this.useIAM ? 'IAM' : 'Standard'
-      });
-
       // Connect to MCP transport
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
 
+      const databases = this.connectionManager.listDatabases();
+      const defaultDb = this.connectionManager.getDefaultDatabaseId();
+
       this.logger.info('MCP Server started successfully', {
-        authentication_method: this.useIAM ? 'IAM' : 'Standard',
         tools_available: this.tools.getToolDefinitions().length,
+        databases_configured: databases.length,
+        default_database: defaultDb,
         security_features: [
           'Advanced SQL injection prevention',
           'Query pattern allowlisting',
@@ -150,13 +134,15 @@ class PostgreSQLMCPServer {
           'Query complexity analysis',
           'Parameter sanitization',
           'Input validation',
+          'PII detection and masking',
+          'Excessive agency controls',
+          'Model theft protection',
           'Comprehensive audit logging'
         ]
       });
     } catch (error) {
       this.logger.error('Failed to start server', {
-        error: error instanceof Error ? error.message : String(error),
-        authentication_method: this.useIAM ? 'IAM' : 'Standard'
+        error: error instanceof Error ? error.message : String(error)
       });
       process.exit(1);
     }
@@ -166,7 +152,7 @@ class PostgreSQLMCPServer {
     try {
       this.logger.info('Stopping PostgreSQL MCP Server');
 
-      await this.db.close();
+      await this.connectionManager.closeAll();
 
       this.logger.info('Server stopped successfully');
     } catch (error) {

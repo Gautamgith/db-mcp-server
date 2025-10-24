@@ -1,6 +1,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { DatabaseQueries } from '../database/queries.js';
 import { IAMDatabaseQueries } from '../database/iam-queries.js';
+import { DatabaseConnectionManager } from '../database/connection-manager.js';
 import { Logger } from '../logging/logger.js';
 import { QueryValidator } from '../security/query-validator.js';
 import { RateLimiter, QueryComplexityAnalyzer } from '../security/rate-limiter.js';
@@ -12,7 +13,7 @@ import { MCPError } from '../types/index.js';
 /**
  * Unified Database Tools for PostgreSQL MCP Server
  *
- * Supports both standard and IAM authentication
+ * Supports multiple databases with both standard and IAM authentication
  * Includes all security features:
  * - SQL injection prevention
  * - Query pattern validation
@@ -24,7 +25,7 @@ import { MCPError } from '../types/index.js';
  * - OWASP LLM02/LLM06: PII detection and masking
  */
 export class UnifiedDatabaseTools {
-  private queries: DatabaseQueries | IAMDatabaseQueries;
+  private connectionManager: DatabaseConnectionManager;
   private logger: Logger;
   private queryValidator: QueryValidator;
   private rateLimiter: RateLimiter;
@@ -32,16 +33,13 @@ export class UnifiedDatabaseTools {
   private agencyControl: AgencyControlSystem;
   private modelTheftProtection: ModelTheftProtectionSystem;
   private piiProtection: PIIProtectionSystem;
-  private useIAM: boolean;
 
   constructor(
-    queries: DatabaseQueries | IAMDatabaseQueries,
-    logger: Logger,
-    useIAM: boolean = false
+    connectionManager: DatabaseConnectionManager,
+    logger: Logger
   ) {
-    this.queries = queries;
+    this.connectionManager = connectionManager;
     this.logger = logger;
-    this.useIAM = useIAM;
 
     this.queryValidator = new QueryValidator(logger);
     this.complexityAnalyzer = new QueryComplexityAnalyzer(logger);
@@ -61,6 +59,16 @@ export class UnifiedDatabaseTools {
 
   getToolDefinitions(): Tool[] {
     return [
+      // Database management tools
+      {
+        name: 'list_databases',
+        description: 'List all configured databases and their connection status',
+        inputSchema: {
+          type: 'object',
+          properties: {}
+        }
+      },
+
       // Basic database introspection tools
       {
         name: 'list_tables',
@@ -68,6 +76,10 @@ export class UnifiedDatabaseTools {
         inputSchema: {
           type: 'object',
           properties: {
+            database_id: {
+              type: 'string',
+              description: 'Database ID (uses default if not specified)'
+            },
             schema_name: {
               type: 'string',
               description: 'Schema name (defaults to "public")',
@@ -82,6 +94,10 @@ export class UnifiedDatabaseTools {
         inputSchema: {
           type: 'object',
           properties: {
+            database_id: {
+              type: 'string',
+              description: 'Database ID (uses default if not specified)'
+            },
             table_name: {
               type: 'string',
               description: 'Name of the table to describe'
@@ -103,6 +119,10 @@ export class UnifiedDatabaseTools {
         inputSchema: {
           type: 'object',
           properties: {
+            database_id: {
+              type: 'string',
+              description: 'Database ID (uses default if not specified)'
+            },
             query: {
               type: 'string',
               description: 'SQL SELECT statement with parameter placeholders ($1, $2, etc.)'
@@ -132,6 +152,10 @@ export class UnifiedDatabaseTools {
         inputSchema: {
           type: 'object',
           properties: {
+            database_id: {
+              type: 'string',
+              description: 'Database ID (uses default if not specified)'
+            },
             pattern_name: {
               type: 'string',
               description: 'Name of the query pattern to use'
@@ -181,6 +205,10 @@ export class UnifiedDatabaseTools {
         inputSchema: {
           type: 'object',
           properties: {
+            database_id: {
+              type: 'string',
+              description: 'Database ID (uses default if not specified)'
+            },
             query: {
               type: 'string',
               description: 'SQL query to validate'
@@ -196,7 +224,12 @@ export class UnifiedDatabaseTools {
         description: 'Check database connection health and authentication status',
         inputSchema: {
           type: 'object',
-          properties: {}
+          properties: {
+            database_id: {
+              type: 'string',
+              description: 'Database ID (uses default if not specified)'
+            }
+          }
         }
       },
       {
@@ -253,7 +286,6 @@ export class UnifiedDatabaseTools {
       this.logger.info(`Tool called: ${name}`, {
         args: this.sanitizeArgsForLogging(args),
         rate_limit_remaining: rateLimitResult.remaining,
-        authentication: this.useIAM ? 'IAM' : 'Standard',
         risk_assessment: {
           level: actionApproval.assessedRisk.level,
           score: actionApproval.assessedRisk.score,
@@ -262,6 +294,9 @@ export class UnifiedDatabaseTools {
       }, queryId);
 
       switch (name) {
+        case 'list_databases':
+          return await this.handleListDatabases(queryId);
+
         case 'list_tables':
           return await this.handleListTables(args, queryId);
 
@@ -284,7 +319,7 @@ export class UnifiedDatabaseTools {
           return await this.handleValidateQuerySyntax(args, queryId);
 
         case 'connection_health':
-          return await this.handleConnectionHealth(queryId);
+          return await this.handleConnectionHealth(args, queryId);
 
         case 'security_status':
           return await this.handleSecurityStatus(queryId);
@@ -304,24 +339,66 @@ export class UnifiedDatabaseTools {
     }
   }
 
+  // === Database Management ===
+
+  private async handleListDatabases(queryId: string): Promise<any> {
+    try {
+      const databases = this.connectionManager.listDatabases();
+      const defaultDatabaseId = this.connectionManager.getDefaultDatabaseId();
+
+      this.logger.info('Databases listed successfully', {
+        count: databases.length,
+        default_database: defaultDatabaseId
+      }, queryId);
+
+      return {
+        databases: databases.map(db => ({
+          id: db.id,
+          name: db.name,
+          description: db.description,
+          host: db.host,
+          port: db.port,
+          database: db.database,
+          user: db.user,
+          authentication_method: db.useIAM ? 'IAM' : 'Standard',
+          enabled: db.enabled,
+          connected: db.connected,
+          is_default: db.id === defaultDatabaseId
+        })),
+        default_database_id: defaultDatabaseId,
+        total_count: databases.length,
+        connected_count: databases.filter(db => db.connected).length
+      };
+    } catch (error) {
+      throw this.createMCPError(-32000, 'DATABASE_ERROR',
+        `Failed to list databases: ${error instanceof Error ? error.message : String(error)}`, queryId);
+    }
+  }
+
   // === Basic Database Introspection ===
 
   private async handleListTables(args: any, queryId: string): Promise<any> {
-    const schemaName = args.schema_name ?? 'public';
+    const { database_id, schema_name = 'public' } = args;
 
     try {
-      const tables = await this.queries.listTables(schemaName);
+      const queries = await this.connectionManager.getQueries(database_id);
+      const database = this.connectionManager.getDatabase(database_id || this.connectionManager.getDefaultDatabaseId()!);
+
+      const tables = await queries.listTables(schema_name);
 
       this.logger.info('Tables listed successfully', {
-        schema: schemaName,
+        database_id: database?.id,
+        schema: schema_name,
         count: tables.length
       }, queryId);
 
       return {
         tables,
-        schema_name: schemaName,
+        database_id: database?.id,
+        database_name: database?.name,
+        schema_name,
         count: tables.length,
-        authentication_method: this.useIAM ? 'IAM' : 'Standard'
+        authentication_method: database?.useIAM ? 'IAM' : 'Standard'
       };
     } catch (error) {
       throw this.createMCPError(-32000, 'DATABASE_ERROR',
@@ -330,7 +407,7 @@ export class UnifiedDatabaseTools {
   }
 
   private async handleDescribeTable(args: any, queryId: string): Promise<any> {
-    const { table_name, schema_name = 'public' } = args;
+    const { database_id, table_name, schema_name = 'public' } = args;
 
     if (!table_name || typeof table_name !== 'string') {
       throw this.createMCPError(-32003, 'PARAMETER_ERROR',
@@ -338,9 +415,13 @@ export class UnifiedDatabaseTools {
     }
 
     try {
-      const tableSchema = await this.queries.describeTable(table_name, schema_name);
+      const queries = await this.connectionManager.getQueries(database_id);
+      const database = this.connectionManager.getDatabase(database_id || this.connectionManager.getDefaultDatabaseId()!);
+
+      const tableSchema = await queries.describeTable(table_name, schema_name);
 
       this.logger.info('Table described successfully', {
+        database_id: database?.id,
         table: table_name,
         schema: schema_name,
         columns: tableSchema.columns.length
@@ -348,7 +429,9 @@ export class UnifiedDatabaseTools {
 
       return {
         table_info: tableSchema,
-        authentication_method: this.useIAM ? 'IAM' : 'Standard'
+        database_id: database?.id,
+        database_name: database?.name,
+        authentication_method: database?.useIAM ? 'IAM' : 'Standard'
       };
     } catch (error) {
       throw this.createMCPError(-32000, 'DATABASE_ERROR',
@@ -359,7 +442,7 @@ export class UnifiedDatabaseTools {
   // === Query Execution ===
 
   private async handleExecuteQuery(args: any, queryId: string, sessionId?: string, userId?: string): Promise<any> {
-    const { query, parameters = [], limit = 100 } = args;
+    const { database_id, query, parameters = [], limit = 100 } = args;
 
     if (!query || typeof query !== 'string') {
       throw this.createMCPError(-32003, 'PARAMETER_ERROR',
@@ -421,7 +504,10 @@ export class UnifiedDatabaseTools {
     }
 
     try {
-      const result = await this.queries.executeSelect({
+      const queries = await this.connectionManager.getQueries(database_id);
+      const database = this.connectionManager.getDatabase(database_id || this.connectionManager.getDefaultDatabaseId()!);
+
+      const result = await queries.executeSelect({
         query: validation.sanitizedQuery!,
         parameters,
         limit
@@ -432,12 +518,14 @@ export class UnifiedDatabaseTools {
 
       if (maskedOutput.piiDetected) {
         this.logger.warn('PII detected and masked in query results', {
+          database_id: database?.id,
           masked_count: maskedOutput.maskedCount,
           pii_types: maskedOutput.types
         }, queryId);
       }
 
       this.logger.info('Query executed successfully', {
+        database_id: database?.id,
         query_length: query.length,
         parameter_count: parameters.length,
         row_count: result.row_count,
@@ -449,9 +537,11 @@ export class UnifiedDatabaseTools {
       return {
         ...result,
         rows: maskedOutput.data,
+        database_id: database?.id,
+        database_name: database?.name,
         security_validated: true,
         complexity_score: complexity.score,
-        authentication_method: this.useIAM ? 'IAM' : 'Standard',
+        authentication_method: database?.useIAM ? 'IAM' : 'Standard',
         pii_protection: {
           applied: maskedOutput.piiDetected,
           masked_count: maskedOutput.maskedCount,
@@ -465,7 +555,7 @@ export class UnifiedDatabaseTools {
   }
 
   private async handleStructuredQuery(args: any, queryId: string, sessionId?: string, userId?: string): Promise<any> {
-    const { pattern_name, parameters, limit = 100 } = args;
+    const { database_id, pattern_name, parameters, limit = 100 } = args;
 
     if (!pattern_name || typeof pattern_name !== 'string') {
       throw this.createMCPError(-32003, 'PARAMETER_ERROR',
@@ -512,7 +602,10 @@ export class UnifiedDatabaseTools {
     }
 
     try {
-      const result = await this.queries.executeSelect({
+      const queries = await this.connectionManager.getQueries(database_id);
+      const database = this.connectionManager.getDatabase(database_id || this.connectionManager.getDefaultDatabaseId()!);
+
+      const result = await queries.executeSelect({
         query: finalQuery,
         parameters: validation.sanitizedParams || [],
         limit
@@ -523,6 +616,7 @@ export class UnifiedDatabaseTools {
 
       if (maskedOutput.piiDetected) {
         this.logger.warn('PII detected and masked in structured query results', {
+          database_id: database?.id,
           pattern: pattern_name,
           masked_count: maskedOutput.maskedCount,
           pii_types: maskedOutput.types
@@ -530,6 +624,7 @@ export class UnifiedDatabaseTools {
       }
 
       this.logger.info('Structured query executed successfully', {
+        database_id: database?.id,
         pattern_name,
         parameter_count: Object.keys(parameters).length,
         row_count: result.row_count,
@@ -540,9 +635,11 @@ export class UnifiedDatabaseTools {
       return {
         ...result,
         rows: maskedOutput.data,
+        database_id: database?.id,
+        database_name: database?.name,
         query_pattern: pattern_name,
         security_validated: true,
-        authentication_method: this.useIAM ? 'IAM' : 'Standard',
+        authentication_method: database?.useIAM ? 'IAM' : 'Standard',
         pii_protection: {
           applied: maskedOutput.piiDetected,
           masked_count: maskedOutput.maskedCount,
@@ -613,7 +710,7 @@ export class UnifiedDatabaseTools {
   }
 
   private async handleValidateQuerySyntax(args: any, queryId: string): Promise<any> {
-    const { query } = args;
+    const { database_id, query } = args;
 
     if (!query || typeof query !== 'string') {
       throw this.createMCPError(-32003, 'PARAMETER_ERROR',
@@ -621,15 +718,21 @@ export class UnifiedDatabaseTools {
     }
 
     try {
-      const isValid = await this.queries.validateQuery(query);
+      const queries = await this.connectionManager.getQueries(database_id);
+      const database = this.connectionManager.getDatabase(database_id || this.connectionManager.getDefaultDatabaseId()!);
+
+      const isValid = await queries.validateQuery(query);
 
       this.logger.info('Query syntax validated', {
+        database_id: database?.id,
         query_length: query.length,
         is_valid: isValid
       }, queryId);
 
       return {
         is_valid: isValid,
+        database_id: database?.id,
+        database_name: database?.name,
         query_length: query.length,
         message: isValid ? 'Query syntax is valid' : 'Query syntax is invalid'
       };
@@ -644,26 +747,38 @@ export class UnifiedDatabaseTools {
 
   // === System and Monitoring ===
 
-  private async handleConnectionHealth(queryId: string): Promise<any> {
-    try {
-      let health: any = {
-        authentication_method: this.useIAM ? 'IAM' : 'Standard',
-        status: 'healthy'
-      };
+  private async handleConnectionHealth(args: any, queryId: string): Promise<any> {
+    const { database_id } = args;
 
-      // Get IAM-specific health info if available
-      if (this.useIAM && 'getConnectionHealth' in this.queries) {
-        const iamQueries = this.queries as IAMDatabaseQueries;
-        const iamHealth = await iamQueries.getConnectionHealth();
-        health = { ...health, ...iamHealth };
+    try {
+      const database = this.connectionManager.getDatabase(database_id || this.connectionManager.getDefaultDatabaseId()!);
+
+      if (!database) {
+        throw new Error('No database specified and no default configured');
       }
 
+      // Check connection health
+      const connectionInfo = await this.connectionManager.checkConnection(database.id);
+
       this.logger.info('Connection health checked', {
-        authentication: this.useIAM ? 'IAM' : 'Standard',
-        status: health.status
+        database_id: database.id,
+        authentication: database.useIAM ? 'IAM' : 'Standard',
+        connected: connectionInfo.connected
       }, queryId);
 
-      return health;
+      return {
+        database_id: database.id,
+        database_name: database.name,
+        host: database.host,
+        port: database.port,
+        database: database.database,
+        user: database.user,
+        authentication_method: database.useIAM ? 'IAM' : 'Standard',
+        connected: connectionInfo.connected,
+        status: connectionInfo.connected ? 'healthy' : 'unhealthy',
+        last_checked: connectionInfo.lastChecked,
+        error: connectionInfo.error
+      };
     } catch (error) {
       throw this.createMCPError(-32000, 'CONNECTION_ERROR',
         `Failed to check connection health: ${error instanceof Error ? error.message : String(error)}`, queryId);
@@ -705,7 +820,6 @@ export class UnifiedDatabaseTools {
         total_patterns: piiStats.totalPatterns,
         patterns_by_severity: piiStats.bySeverity
       },
-      authentication_method: this.useIAM ? 'IAM' : 'Standard',
       owasp_compliance: [
         'LLM01: Prompt Injection Protection',
         'LLM02: Insecure Output Handling (PII Masking)',
