@@ -1,0 +1,30 @@
+# EC2-Only Deployment Variables
+# Use this when connecting to existing staging/production RDS instances
+
+# AWS Configuration
+aws_region  = "us-west-2"
+environment = "prod"
+
+# Existing Network Resources
+vpc_id            = "vpc-xxxxxxxxx"
+public_subnet_id  = "subnet-xxxxxxxxx"
+
+# Security Configuration
+allowed_ssh_cidrs = ["10.0.0.0/8"]
+allowed_web_cidrs = ["10.0.0.0/8"]
+
+# EC2 Configuration
+ec2_instance_type = "t3.medium"
+ec2_key_pair_name = "your-key-pair"
+
+# Existing RDS Configuration
+# These values should match your existing staging/production RDS
+existing_rds_identifier = "your-existing-rds-instance-id"  # Optional: for data source lookup
+rds_endpoint            = "your-rds-endpoint.us-west-2.rds.amazonaws.com:5432"
+rds_resource_id         = "db-XXXXXXXXXXXXXXX"  # Get from RDS console
+db_name                 = "your_database"
+db_iam_username         = "mcp_server"
+
+# Application Configuration
+github_repo_url = "https://github.com/your-org/postgresql-mcp.git"
+domain_name     = "mcp.yourdomain.com"  # Optional
